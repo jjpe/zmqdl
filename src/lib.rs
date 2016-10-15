@@ -156,7 +156,7 @@ impl<'z> ZmqSocket<'z> {
 
     /// See [zmq_recv](http://api.zeromq.org/4-1:zmq_recv)
     pub fn receive<'b>(&self, buf: &'b mut [u8], flags: c_int)
-                       -> io::Result<&'b mut [u8]> {
+                       -> io::Result<&'b [u8]> {
         let func = cfn! {
             fn zmq_recv(socket: *mut c_void,
                         buf: *mut c_void,
@@ -170,7 +170,7 @@ impl<'z> ZmqSocket<'z> {
             -1 => Err(io::Error::new(io::ErrorKind::Other, "Could not receive")),
             num_bytes if num_bytes > buflen as c_int =>
                 Err(io::Error::new(io::ErrorKind::InvalidData, "Msg truncated")),
-            num_bytes => Ok(&mut buf[..num_bytes as usize]),
+            num_bytes => Ok(&buf[..num_bytes as usize]),
         }
     }
 
