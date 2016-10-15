@@ -1,0 +1,11 @@
+[package]
+name = "zmqdl"
+version = "0.1.0"
+authors = ["Joey Ezechiëls <joey.ezechiels@gmail.com>"]
+
+[dependencies]
+libc = "0.2.16"
+libloading = "0.3"
+
+[dependencies.zmq]
+git = "https://github.com/erickt/rust-zmq.git"
