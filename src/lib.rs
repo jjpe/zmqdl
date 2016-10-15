@@ -11,29 +11,6 @@ use std::time::Duration;
 #[cfg(target_os = "linux")] use std::process;
 pub use zmq::{Constants, SocketType};
 
-pub fn as_nanos(d: Duration) -> u64 {
-    const NANOS_PER_SEC: u64 = 1_000_000_000;
-    d.as_secs() * NANOS_PER_SEC + d.subsec_nanos() as u64
-}
-
-
-#[cfg(target_os = "macos")]
-pub fn location() -> &'static str { "/usr/local/lib/libzmq.dylib" }
-
-#[cfg(target_os = "linux")]
-pub fn location() -> &'static str {
-    let output = process::Command::new("uname")
-        .arg("-a")
-        .output()
-        .expect("Failed to gather OS information");
-    let uname = String::from_utf8(output.stdout).unwrap();
-    match uname {
-        _ if uname.contains("Ubuntu") => "/usr/lib/x86_64-linux-gnu/libzmq.so",
-        // TODO: Insert the libzmq sonames for other Linux OSes here.
-        _ => "NOT_FOUND", // Other
-    }
-}
-
 
 macro_rules! cfn {
     (fn $name:ident($($args:ident : $argtypes:ty),*) -> $ret:ty,
@@ -44,7 +21,9 @@ macro_rules! cfn {
      }};
 }
 
-
+/******************************************************************************/
+/*                              ZmqCtx                                        */
+/******************************************************************************/
 pub struct ZmqCtx<'z> { ptr: *mut c_void, lib: &'z ZmqLib, }
 
 impl<'z> ZmqCtx<'z> {
@@ -81,7 +60,9 @@ impl<'z> Drop for ZmqCtx<'z> {
     }
 }
 
-
+/******************************************************************************/
+/*                              ZmqSocket                                     */
+/******************************************************************************/
 pub struct ZmqSocket<'z> { ptr: *mut c_void, lib: &'z ZmqLib, }
 
 impl<'z> ZmqSocket<'z> {
@@ -200,7 +181,9 @@ impl<'z> Drop for ZmqSocket<'z> {
     }
 }
 
-
+/******************************************************************************/
+/*                              ZmqLib                                        */
+/******************************************************************************/
 pub struct ZmqLib { lib: lib::Library, path: PathBuf, }
 
 impl ZmqLib {
@@ -220,8 +203,34 @@ impl ZmqLib {
 
 }
 
+/******************************************************************************/
+/*                              Utilities                                     */
+/******************************************************************************/
+pub fn as_nanos(d: Duration) -> u64 {
+    const NANOS_PER_SEC: u64 = 1_000_000_000;
+    d.as_secs() * NANOS_PER_SEC + d.subsec_nanos() as u64
+}
 
+#[cfg(target_os = "macos")]
+pub fn location() -> &'static str { "/usr/local/lib/libzmq.dylib" }
 
+#[cfg(target_os = "linux")]
+pub fn location() -> &'static str {
+    let output = process::Command::new("uname")
+        .arg("-a")
+        .output()
+        .expect("Failed to gather OS information");
+    let uname = String::from_utf8(output.stdout).unwrap();
+    match uname {
+        _ if uname.contains("Ubuntu") => "/usr/lib/x86_64-linux-gnu/libzmq.so",
+        // TODO: Insert the libzmq sonames for other Linux OSes here.
+        _ => "NOT_FOUND", // Other
+    }
+}
+
+/******************************************************************************/
+/*                              Tests                                         */
+/******************************************************************************/
 #[cfg(test)]
 mod tests {
     use super::{ZmqLib, location};
