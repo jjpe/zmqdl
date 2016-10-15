@@ -133,7 +133,11 @@ impl ZmqLib {
 
 #[cfg(test)]
 mod tests {
+    use super::{ZmqLib, location};
+
     #[test]
-    fn it_works() {
+    fn will_it_load() {
+        let loc = location();
+        assert!(ZmqLib::new(loc).is_ok());
     }
 }
