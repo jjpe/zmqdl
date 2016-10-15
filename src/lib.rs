@@ -6,7 +6,27 @@ use libc::{c_char, c_int, c_void, size_t};
 use std::ffi::CString;
 use std::io;
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")] use std::process;
 pub use zmq::SocketType;
+
+
+#[cfg(target_os = "macos")]
+pub fn location() -> &'static str { "/usr/local/lib/libzmq.dylib" }
+
+#[cfg(target_os = "linux")]
+pub fn location() -> &'static str {
+    let output = process::Command::new("uname")
+        .arg("-a")
+        .output()
+        .expect("Failed to gather OS information");
+    let uname = String::from_utf8(output.stdout).unwrap();
+    match uname {
+        _ if uname.contains("Ubuntu") => "/usr/lib/x86_64-linux-gnu/libzmq.so",
+        // TODO: Insert the libzmq sonames for other Linux OSes here.
+        _ => "NOT_FOUND", // Other
+    }
+}
+
 
 macro_rules! cfn {
     (fn $name:ident($($args:ident : $argtypes:ty),*) -> $ret:ty,
@@ -17,6 +37,7 @@ macro_rules! cfn {
          unsafe { try!((&$lib).get(name_bytes)) as lib::Symbol<FnSig> }
      }};
 }
+
 
 pub struct ZmqCtx(*mut c_void);
 pub struct ZmqSocket(*mut c_void);
