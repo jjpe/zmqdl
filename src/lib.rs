@@ -98,8 +98,8 @@ impl ZmqLib {
     }
 
     /// See [zmq_recv](http://api.zeromq.org/4-1:zmq_recv)
-    pub fn receive(&self, sock: &ZmqSocket, buf: &mut [u8], flags: c_int)
-                   -> io::Result<c_int> {
+    pub fn receive<'b>(&self, sock: &ZmqSocket, buf: &'b mut [u8], flags: c_int)
+                       -> io::Result<&'b mut [u8]> {
         let func = cfn! {
             fn zmq_recv(socket: *mut c_void,
                         buf: *mut c_void,
@@ -109,7 +109,12 @@ impl ZmqLib {
         };
         let bufptr = buf.as_mut_ptr() as *mut c_void;
         let buflen = buf.len() as size_t;
-        Ok(unsafe { func(sock.0, bufptr, buflen, flags) })
+        match unsafe { func(sock.0, bufptr, buflen, flags) } {
+            -1 => Err(io::Error::new(io::ErrorKind::Other, "Receive failed")),
+            num_bytes if num_bytes > buflen as c_int =>
+                Err(io::Error::new(io::ErrorKind::InvalidData, "Msg truncated")),
+            num_bytes => Ok(&mut buf[..num_bytes as usize]),
+        }
     }
 
     /// See [zmq_send](http://api.zeromq.org/4-1:zmq_send)
