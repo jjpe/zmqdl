@@ -86,9 +86,40 @@ impl<'z> ZmqSocket<'z> {
         }}
     }
 
+    fn set_int_option(&self, arg: Constants, argval: c_int) -> io::Result<()> {
+        let ptr = (&argval as *const c_int) as *const c_void;
+        self.set_option(arg, ptr, mem::size_of::<c_int>())
+    }
+
+    fn set_slice_option<T>(&self, arg: Constants, argval: &[T])
+                           -> io::Result<()> {
+        let len = argval.len();
+        let ptr = argval.as_ptr() as *const c_void;
+        self.set_option(arg, ptr, len * mem::size_of::<T>() as size_t)
+    }
+
+    #[allow(unused)]
+    fn set_mut_slice_option<T>(&self, arg: Constants, argval: &mut [T])
+                               -> io::Result<()> {
+        let len = argval.len();
+        let ptr = argval.as_mut_ptr() as *mut c_void;
+        self.set_option(arg, ptr, len * mem::size_of::<T>() as size_t)
+    }
+
     pub fn set_linger_period(&self, millis: c_int) -> io::Result<()> {
-        let ptr = (&millis as *const c_int) as *const c_void;
-        self.set_option(Constants::ZMQ_LINGER, ptr, mem::size_of::<c_int>())
+        self.set_int_option(Constants::ZMQ_LINGER, millis)
+    }
+
+    pub fn set_recv_timeout(&self, millis: c_int) -> io::Result<()> {
+        self.set_int_option(Constants::ZMQ_RCVTIMEO, millis)
+    }
+
+    pub fn set_send_timeout(&self, millis: c_int) -> io::Result<()> {
+        self.set_int_option(Constants::ZMQ_SNDTIMEO, millis)
+    }
+
+    pub fn subscribe(&self, filter: &[u8]) -> io::Result<()> {
+        self.set_slice_option(Constants::ZMQ_SUBSCRIBE, filter)
     }
 
     /// See [zmq-connect](http://api.zeromq.org/4-1:zmq-connect)
