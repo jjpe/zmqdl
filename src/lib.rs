@@ -38,8 +38,7 @@ pub fn location() -> &'static str {
 macro_rules! cfn {
     (fn $name:ident($($args:ident : $argtypes:ty),*) -> $ret:ty,
      in $lib:expr) => {{
-         let name = stringify!($name);
-         let name_bytes = name.as_bytes();
+         let name_bytes = stringify!($name).as_bytes();
          type FnSig = unsafe extern fn ($($argtypes),*) -> $ret;
          unsafe { try!($lib.get(name_bytes)) as lib::Symbol<FnSig> }
      }};
@@ -55,11 +54,10 @@ impl<'z> ZmqCtx<'z> {
             fn zmq_socket(ctx: *mut c_void, stype: c_int) -> *mut c_void,
             in self.lib.lib
         };
-        let sock = unsafe { ZmqSocket {
-            ptr: func(self.ptr, stype as c_int),
+        Ok(ZmqSocket {
+            ptr: unsafe { func(self.ptr, stype as c_int) },
             lib: &self.lib
-        }};
-        Ok(sock)
+        })
     }
 
     pub fn term(&self) -> io::Result<()> {
@@ -100,43 +98,47 @@ impl<'z> ZmqSocket<'z> {
         };
         unsafe { match func(self.ptr, option_name as c_int, optvalue, optlen) {
             0 => Ok(()),
-            _ => Err(io::Error::new(io::ErrorKind::Other,
-                                    "Setting socket option failed")),
+            _ => {
+                let msg = "Setting socket option failed";
+                Err(io::Error::new(io::ErrorKind::Other, msg))
+            },
         }}
     }
 
-
     pub fn set_linger_period(&self, millis: c_int) -> io::Result<()> {
-        self.set_option(Constants::ZMQ_LINGER,
-                        (&millis as *const c_int) as *const c_void,
-                        mem::size_of::<c_int>())
+        let ptr = (&millis as *const c_int) as *const c_void;
+        self.set_option(Constants::ZMQ_LINGER, ptr, mem::size_of::<c_int>())
     }
 
     /// See [zmq-connect](http://api.zeromq.org/4-1:zmq-connect)
-    pub fn connect(&self, addr: &str) -> io::Result<c_int> {
+    pub fn connect(&self, addr: &str) -> io::Result<()> {
         let func = cfn! {
             fn zmq_connect(socket: *mut c_void, addr: *const c_char) -> c_int,
             in self.lib.lib
         };
         let addr_ptr = CString::new(addr).unwrap().into_raw();
-        unsafe { match func(self.ptr, addr_ptr) {
-            -1 => Err(io::Error::new(io::ErrorKind::ConnectionAborted,
-                                     "Error connecting")),
-            rc => Ok(rc),
-        }}
+        match unsafe { func(self.ptr, addr_ptr) } {
+            0 => Ok(()),
+            _ => {
+                let msg = "Error connecting";
+                Err(io::Error::new(io::ErrorKind::ConnectionAborted, msg))
+            },
+        }
     }
 
     /// See [zmq-bind](http://api.zeromq.org/4-1:zmq-bind)
-    pub fn bind(&self, addr: &str) -> io::Result<c_int> {
+    pub fn bind(&self, addr: &str) -> io::Result<()> {
         let func = cfn! {
             fn zmq_bind(socket: *mut c_void, addr: *const c_char) -> c_int,
             in self.lib.lib
         };
         let addr_ptr = CString::new(addr).unwrap().into_raw();
         match unsafe { func(self.ptr, addr_ptr) } {
-            -1 => Err(io::Error::new(io::ErrorKind::ConnectionAborted,
-                                     "Error binding")),
-            rc => Ok(rc),
+            0 => Ok(()),
+            _ => {
+                let msg = "Error binding";
+                Err(io::Error::new(io::ErrorKind::ConnectionAborted, msg))
+            },
         }
     }
 
@@ -153,7 +155,7 @@ impl<'z> ZmqSocket<'z> {
         let bufptr = buf.as_mut_ptr() as *mut c_void;
         let buflen = buf.len() as size_t;
         match unsafe { func(self.ptr, bufptr, buflen, flags) } {
-            -1 => Err(io::Error::new(io::ErrorKind::Other, "Receive failed")),
+            -1 => Err(io::Error::new(io::ErrorKind::Other, "Could not receive")),
             num_bytes if num_bytes > buflen as c_int =>
                 Err(io::Error::new(io::ErrorKind::InvalidData, "Msg truncated")),
             num_bytes => Ok(&mut buf[..num_bytes as usize]),
@@ -171,7 +173,10 @@ impl<'z> ZmqSocket<'z> {
         };
         let bufptr = buf.as_mut_ptr() as *mut c_void;
         let buflen = buf.len() as size_t;
-        Ok(unsafe { func(self.ptr, bufptr, buflen, flags) })
+        match unsafe { func(self.ptr, bufptr, buflen, flags) } {
+            -1 => Err(io::Error::new(io::ErrorKind::Other, "Could not send")),
+            num_bytes => Ok(num_bytes),
+        }
     }
 
     pub fn close(&self) -> io::Result<()> {
@@ -187,7 +192,6 @@ impl<'z> ZmqSocket<'z> {
             },
         }
     }
-
 }
 
 impl<'z> Drop for ZmqSocket<'z> {
