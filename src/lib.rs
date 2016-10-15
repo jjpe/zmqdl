@@ -197,16 +197,12 @@ impl<'z> Drop for ZmqSocket<'z> {
 }
 
 
-pub struct ZmqLib {
-    lib: lib::Library,
-    path: PathBuf,
-}
+pub struct ZmqLib { lib: lib::Library, path: PathBuf, }
 
 impl ZmqLib {
     pub fn new<'s, S: Into<&'s str>>(soname: S) -> io::Result<Self> {
         let path = PathBuf::from(soname.into());
         let lib = try!(lib::Library::new(&path));
-
         Ok(ZmqLib { lib: lib, path: path })
     }
 
@@ -218,13 +214,6 @@ impl ZmqLib {
     /// Return the path the lib was loaded from.
     pub fn load_path(&self) -> &Path { &self.path }
 
-}
-
-
-impl Drop for ZmqLib {
-    fn drop(&mut self) {
-        // assert!(self.term_context(&self.context).is_ok());
-    }
 }
 
 
