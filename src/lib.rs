@@ -47,7 +47,6 @@ impl ZmqLib {
     pub fn new<'s, S: Into<&'s str>>(soname: S) -> io::Result<Self> {
         let path = PathBuf::from(soname.into());
         let lib = try!(lib::Library::new(&path));
-        println!("Loaded zmq @ {}", &path.to_str().unwrap());
         Ok(ZmqLib { lib: lib, path: path })
     }
 
