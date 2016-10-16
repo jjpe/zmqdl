@@ -28,7 +28,7 @@ pub struct ZmqCtx<'z> { ptr: *mut c_void, lib: &'z ZmqLib, }
 
 impl<'z> ZmqCtx<'z> {
     /// See [zmq-socket](http://api.zeromq.org/4-1:zmq-socket)
-    pub fn socket(&self, stype: SocketType) -> io::Result<ZmqSocket> {
+    pub fn new_socket(&self, stype: SocketType) -> io::Result<ZmqSocket> {
         let func = cfn! {
             fn zmq_socket(ctx: *mut c_void, stype: c_int) -> *mut c_void,
             in self.lib.lib
