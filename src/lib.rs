@@ -224,7 +224,7 @@ impl ZmqLib {
         Ok(ZmqLib { lib: lib, path: path })
     }
 
-    pub fn new_context(&self) -> io::Result<ZmqCtx> {
+    pub fn new_context<'z>(&'z self) -> io::Result<ZmqCtx<'z>> {
         let func = cfn! { fn zmq_ctx_new() -> *mut c_void,  in &self.lib };
         Ok(ZmqCtx { ptr: unsafe { func() }, lib: &self })
     }
