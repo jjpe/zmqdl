@@ -138,6 +138,23 @@ impl<'z> ZmqSocket<'z> {
         }
     }
 
+    /// See [zmq-disconnect](http://api.zeromq.org/4-1:zmq-disconnect)
+    pub fn disconnect(&self, addr: &str) -> io::Result<()> {
+        let func = cfn! {
+            fn zmq_disconnect(socket: *mut c_void, addr: *const c_char) -> c_int,
+            in self.lib.lib
+        };
+        let cstr = CString::new(addr).unwrap();
+        let addr_ptr = cstr.as_ptr() as *const c_char;
+        match unsafe { func(self.ptr, addr_ptr) } {
+            0 => Ok(()),
+            _ => {
+                let msg = "Error disconnecting";
+                Err(io::Error::new(io::ErrorKind::ConnectionAborted, msg))
+            },
+        }
+    }
+
     /// See [zmq-bind](http://api.zeromq.org/4-1:zmq-bind)
     pub fn bind(&self, addr: &str) -> io::Result<()> {
         let func = cfn! {
