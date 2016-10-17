@@ -175,15 +175,15 @@ impl<'z> ZmqSocket<'z> {
     }
 
     /// See [zmq_send](http://api.zeromq.org/4-1:zmq_send)
-    pub fn send(&self, buf: &mut [u8], flags: c_int) -> io::Result<c_int> {
+    pub fn send(&self, buf: &[u8], flags: c_int) -> io::Result<c_int> {
         let func = cfn! {
             fn zmq_send(socket: *mut c_void,
-                        buf: *mut c_void,
+                        buf: *const c_void,
                         len: size_t,
                         flags: c_int) -> c_int,
             in self.lib.lib
         };
-        let bufptr = buf.as_mut_ptr() as *mut c_void;
+        let bufptr = buf.as_ptr() as *const c_void;
         let buflen = buf.len() as size_t;
         match unsafe { func(self.ptr, bufptr, buflen, flags) } {
             -1 => Err(io::Error::new(io::ErrorKind::Other, "Could not send")),
