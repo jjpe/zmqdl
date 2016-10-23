@@ -128,7 +128,8 @@ impl<'z> ZmqSocket<'z> {
             fn zmq_connect(socket: *mut c_void, addr: *const c_char) -> c_int,
             in self.lib.lib
         };
-        let addr_ptr = CString::new(addr).unwrap().into_raw();
+        let cstr = CString::new(addr).unwrap();
+        let addr_ptr = cstr.as_ptr() as *const c_char;
         match unsafe { func(self.ptr, addr_ptr) } {
             0 => Ok(()),
             _ => {
