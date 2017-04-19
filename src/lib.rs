@@ -13,6 +13,50 @@ use std::time::Duration;
 pub use zmq::{Constants, SocketType};
 use zmq_sys::zmq_msg_t;
 
+/// This function is inspired by, but different from, the code in zmq_sys. The
+/// reason is that it panics when it doesn't know what to do, which is a problem
+/// as it means an interrupt can crash any consumer of this library. This fn
+/// fixes that deficiency by returning `None` instead of panicking.
+pub fn errno_to_error() -> Option<zmq::Error> {
+    match unsafe { zmq_sys::zmq_errno() } {
+        zmq_sys::errno::EACCES           => Some(zmq::Error::EACCES),
+        zmq_sys::errno::EADDRINUSE       => Some(zmq::Error::EADDRINUSE),
+        zmq_sys::errno::EAGAIN           => Some(zmq::Error::EAGAIN),
+        zmq_sys::errno::EBUSY            => Some(zmq::Error::EBUSY),
+        zmq_sys::errno::ECONNREFUSED     => Some(zmq::Error::ECONNREFUSED),
+        zmq_sys::errno::EFAULT           => Some(zmq::Error::EFAULT),
+        zmq_sys::errno::EHOSTUNREACH     => Some(zmq::Error::EHOSTUNREACH),
+        zmq_sys::errno::EINPROGRESS      => Some(zmq::Error::EINPROGRESS),
+        zmq_sys::errno::EINVAL           => Some(zmq::Error::EINVAL),
+        zmq_sys::errno::EMFILE           => Some(zmq::Error::EMFILE),
+        zmq_sys::errno::EMSGSIZE         => Some(zmq::Error::EMSGSIZE),
+        zmq_sys::errno::ENAMETOOLONG     => Some(zmq::Error::ENAMETOOLONG),
+        zmq_sys::errno::ENODEV           => Some(zmq::Error::ENODEV),
+        zmq_sys::errno::ENOENT           => Some(zmq::Error::ENOENT),
+        zmq_sys::errno::ENOMEM           => Some(zmq::Error::ENOMEM),
+        zmq_sys::errno::ENOTCONN         => Some(zmq::Error::ENOTCONN),
+        zmq_sys::errno::ENOTSOCK         => Some(zmq::Error::ENOTSOCK),
+        zmq_sys::errno::EPROTO           => Some(zmq::Error::EPROTO),
+        zmq_sys::errno::EPROTONOSUPPORT  => Some(zmq::Error::EPROTONOSUPPORT),
+        zmq_sys::errno::ENOTSUP          => Some(zmq::Error::ENOTSUP),
+        zmq_sys::errno::ENOBUFS          => Some(zmq::Error::ENOBUFS),
+        zmq_sys::errno::ENETDOWN         => Some(zmq::Error::ENETDOWN),
+        zmq_sys::errno::EADDRNOTAVAIL    => Some(zmq::Error::EADDRNOTAVAIL),
+        156384714                        => Some(zmq::Error::EPROTONOSUPPORT),
+        156384715                        => Some(zmq::Error::ENOBUFS),
+        156384716                        => Some(zmq::Error::ENETDOWN),
+        156384717                        => Some(zmq::Error::EADDRINUSE),
+        156384718                        => Some(zmq::Error::EADDRNOTAVAIL),
+        156384719                        => Some(zmq::Error::ECONNREFUSED),
+        156384720                        => Some(zmq::Error::EINPROGRESS),
+        156384721                        => Some(zmq::Error::ENOTSOCK),
+        156384763                        => Some(zmq::Error::EFSM),
+        156384764                        => Some(zmq::Error::ENOCOMPATPROTO),
+        156384765                        => Some(zmq::Error::ETERM),
+        156384766                        => Some(zmq::Error::EMTHREAD),
+        _ => None,
+    }
+}
 
 macro_rules! cfn {
     (fn $name:ident($($args:ident : $argtypes:ty),*) -> $ret:ty,
@@ -121,10 +165,10 @@ impl<'z> Drop for ZmqCtx<'z> {
 /******************************************************************************/
 pub type SockResult<T> = Result<T, SockErr>;
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum SockErr {
-    FailedToSetOption(String),
-    FailedToGetOption(String),
+    FailedToSetOption(Constants),
+    FailedToGetOption(Constants),
     FailedToConnect { address: String },
     FailedToDisconnect { address: String },
     FailedToBind { address: String },
@@ -132,6 +176,9 @@ pub enum SockErr {
     FailedToSend,
     FailedToCloseSocket,
     MessageTruncated,
+
+    Interrupted,
+    TemporarilyUnavailable,
 
     IoNotFound(Option<String>),
     IoPermissionDenied(Option<String>),
@@ -201,10 +248,7 @@ impl<'z> ZmqSocket<'z> {
         };
         match unsafe { func(self.ptr, name as c_int, value, len) } {
             0 => Ok(()),
-            _ => {
-                let msg = String::from("Setting socket option failed");
-                Err(SockErr::FailedToSetOption(msg))
-            },
+            _ => Err(SockErr::FailedToSetOption(name)),
         }
     }
 
@@ -288,7 +332,7 @@ impl<'z> ZmqSocket<'z> {
     /// See [zmq_recv](http://api.zeromq.org/4-1:zmq_recv)
     pub fn receive<'b>(&self, buf: &'b mut [u8], flags: c_int)
                        -> SockResult<&'b [u8]> {
-        let func = cfn! {
+        let zmq_recv = cfn! {
             fn zmq_recv(socket: *mut c_void,
                         buf: *mut c_void,
                         len: size_t,
@@ -297,9 +341,15 @@ impl<'z> ZmqSocket<'z> {
         };
         let bufptr = buf.as_mut_ptr() as *mut c_void;
         let buflen = buf.len() as size_t;
-        match unsafe { func(self.ptr, bufptr, buflen, flags) } {
-            -1 => { // TODO: try to use `errno_to_error()`
-                return Err(SockErr::FailedToReceive)
+        match unsafe { zmq_recv(self.ptr, bufptr, buflen, flags) } {
+            -1 => match errno_to_error() {
+                None => Ok(&[]),
+                Some(zmq::Error::EINTR) => Err(SockErr::Interrupted),
+                Some(zmq::Error::EAGAIN) => Err(SockErr::TemporarilyUnavailable),
+                Some(zmq_error) => {
+                    // TODO: use zmq_error
+                    Err(SockErr::FailedToReceive)
+                }
             },
             num_bytes if num_bytes > buflen as c_int =>
                 Err(SockErr::MessageTruncated),
