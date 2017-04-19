@@ -1,6 +1,7 @@
 extern crate libc;
 extern crate libloading as lib;
 extern crate zmq;
+extern crate zmq_sys;
 
 use libc::{c_char, c_int, c_void, size_t};
 use std::ffi::CString;
@@ -10,6 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 #[cfg(target_os = "linux")] use std::process;
 pub use zmq::{Constants, SocketType};
+use zmq_sys::zmq_msg_t;
 
 
 macro_rules! cfn {
@@ -17,40 +19,94 @@ macro_rules! cfn {
      in $lib:expr) => {{
          let name_bytes = stringify!($name).as_bytes();
          type FnSig = unsafe extern fn ($($argtypes),*) -> $ret;
-         unsafe { try!($lib.get(name_bytes)) as lib::Symbol<FnSig> }
+         unsafe { $lib.get(name_bytes)? as lib::Symbol<FnSig> }
      }};
 }
 
 /******************************************************************************/
 /*                              ZmqCtx                                        */
 /******************************************************************************/
+pub type ZmqCtxResult<T> = Result<T, ZmqCtxErr>;
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ZmqCtxErr {
+    FailedToTerminate { return_code: i64 },
+
+    IoNotFound(Option<String>),
+    IoPermissionDenied(Option<String>),
+    IoConnectionRefused(Option<String>),
+    IoConnectionReset(Option<String>),
+    IoConnectionAborted(Option<String>),
+    IoNotConnected(Option<String>),
+    IoAddrInUse(Option<String>),
+    IoAddrNotAvailable(Option<String>),
+    IoBrokenPipe(Option<String>),
+    IoAlreadyExists(Option<String>),
+    IoWouldBlock(Option<String>),
+    IoInvalidInput(Option<String>),
+    IoInvalidData(Option<String>),
+    IoTimedOut(Option<String>),
+    IoWriteZero(Option<String>),
+    IoInterrupted(Option<String>),
+    IoOther(Option<String>),
+    IoUnexpectedEof(Option<String>),
+}
+
+impl From<io::Error> for ZmqCtxErr {
+    fn from(ioe: io::Error) -> ZmqCtxErr {
+        use io::ErrorKind;
+        use std::error::Error;
+        let cause = ioe.cause().map(|err: &Error| format!("{}", err));
+        match ioe.kind() {
+            ErrorKind::NotFound => ZmqCtxErr::IoNotFound(cause),
+            ErrorKind::PermissionDenied => ZmqCtxErr::IoPermissionDenied(cause),
+            ErrorKind::ConnectionRefused => ZmqCtxErr::IoConnectionRefused(cause),
+            ErrorKind::ConnectionReset => ZmqCtxErr::IoConnectionReset(cause),
+            ErrorKind::ConnectionAborted => ZmqCtxErr::IoConnectionAborted(cause),
+            ErrorKind::NotConnected => ZmqCtxErr::IoNotConnected(cause),
+            ErrorKind::AddrInUse => ZmqCtxErr::IoAddrInUse(cause),
+            ErrorKind::AddrNotAvailable => ZmqCtxErr::IoAddrNotAvailable(cause),
+            ErrorKind::BrokenPipe => ZmqCtxErr::IoBrokenPipe(cause),
+            ErrorKind::AlreadyExists => ZmqCtxErr::IoAlreadyExists(cause),
+            ErrorKind::WouldBlock => ZmqCtxErr::IoWouldBlock(cause),
+            ErrorKind::InvalidInput => ZmqCtxErr::IoInvalidInput(cause),
+            ErrorKind::InvalidData => ZmqCtxErr::IoInvalidData(cause),
+            ErrorKind::TimedOut => ZmqCtxErr::IoTimedOut(cause),
+            ErrorKind::WriteZero => ZmqCtxErr::IoWriteZero(cause),
+            ErrorKind::Interrupted => ZmqCtxErr::IoInterrupted(cause),
+            ErrorKind::Other => ZmqCtxErr::IoOther(cause),
+            ErrorKind::UnexpectedEof => ZmqCtxErr::IoUnexpectedEof(cause),
+            _ => unimplemented!(),
+        }
+    }
+}
+
+
 pub struct ZmqCtx<'z> { ptr: *mut c_void, lib: &'z ZmqLib, }
 
 impl<'z> ZmqCtx<'z> {
     /// See [zmq-socket](http://api.zeromq.org/4-1:zmq-socket)
-    pub fn new_socket(&self, stype: SocketType) -> io::Result<ZmqSocket> {
+    pub fn new_socket(&self, stype: SocketType) -> ZmqCtxResult<ZmqSocket> {
         let func = cfn! {
             fn zmq_socket(ctx: *mut c_void, stype: c_int) -> *mut c_void,
             in self.lib.lib
         };
         Ok(ZmqSocket {
             ptr: unsafe { func(self.ptr, stype as c_int) },
-            lib: &self.lib
+            zmqlib: &self.lib,
+            rx_buf: zmq_msg_t::default()
         })
     }
 
-    pub fn term(&self) -> io::Result<()> {
+    pub fn term(&self) -> ZmqCtxResult<()> {
         let term = cfn! {
             fn zmq_term(context: *mut c_void) -> c_int,
             in self.lib.lib
         };
-        unsafe { match term(self.ptr) {
+        match unsafe { term(self.ptr) } {
             0 => Ok(()),
-            rc => {
-                let msg = format!("Could not terminate: {:?}", rc);
-                Err(io::Error::new(io::ErrorKind::Other, msg))
-            },
-        }}
+            rc => Err(ZmqCtxErr::FailedToTerminate { return_code: rc as i64 }),
+        }
     }
 }
 
@@ -63,163 +119,219 @@ impl<'z> Drop for ZmqCtx<'z> {
 /******************************************************************************/
 /*                              ZmqSocket                                     */
 /******************************************************************************/
-pub struct ZmqSocket<'z> { ptr: *mut c_void, lib: &'z ZmqLib, }
+pub type SockResult<T> = Result<T, SockErr>;
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SockErr {
+    FailedToSetOption(String),
+    FailedToGetOption(String),
+    FailedToConnect { address: String },
+    FailedToDisconnect { address: String },
+    FailedToBind { address: String },
+    FailedToReceive,
+    FailedToSend,
+    FailedToCloseSocket,
+    MessageTruncated,
+
+    IoNotFound(Option<String>),
+    IoPermissionDenied(Option<String>),
+    IoConnectionRefused(Option<String>),
+    IoConnectionReset(Option<String>),
+    IoConnectionAborted(Option<String>),
+    IoNotConnected(Option<String>),
+    IoAddrInUse(Option<String>),
+    IoAddrNotAvailable(Option<String>),
+    IoBrokenPipe(Option<String>),
+    IoAlreadyExists(Option<String>),
+    IoWouldBlock(Option<String>),
+    IoInvalidInput(Option<String>),
+    IoInvalidData(Option<String>),
+    IoTimedOut(Option<String>),
+    IoWriteZero(Option<String>),
+    IoInterrupted(Option<String>),
+    IoOther(Option<String>),
+    IoUnexpectedEof(Option<String>),
+}
+
+impl From<io::Error> for SockErr {
+    fn from(ioe: io::Error) -> SockErr {
+        use io::ErrorKind;
+        use std::error::Error;
+        let cause = ioe.cause().map(|err: &Error| format!("{}", err));
+        match ioe.kind() {
+            ErrorKind::NotFound => SockErr::IoNotFound(cause),
+            ErrorKind::PermissionDenied => SockErr::IoPermissionDenied(cause),
+            ErrorKind::ConnectionRefused => SockErr::IoConnectionRefused(cause),
+            ErrorKind::ConnectionReset => SockErr::IoConnectionReset(cause),
+            ErrorKind::ConnectionAborted => SockErr::IoConnectionAborted(cause),
+            ErrorKind::NotConnected => SockErr::IoNotConnected(cause),
+            ErrorKind::AddrInUse => SockErr::IoAddrInUse(cause),
+            ErrorKind::AddrNotAvailable => SockErr::IoAddrNotAvailable(cause),
+            ErrorKind::BrokenPipe => SockErr::IoBrokenPipe(cause),
+            ErrorKind::AlreadyExists => SockErr::IoAlreadyExists(cause),
+            ErrorKind::WouldBlock => SockErr::IoWouldBlock(cause),
+            ErrorKind::InvalidInput => SockErr::IoInvalidInput(cause),
+            ErrorKind::InvalidData => SockErr::IoInvalidData(cause),
+            ErrorKind::TimedOut => SockErr::IoTimedOut(cause),
+            ErrorKind::WriteZero => SockErr::IoWriteZero(cause),
+            ErrorKind::Interrupted => SockErr::IoInterrupted(cause),
+            ErrorKind::Other => SockErr::IoOther(cause),
+            ErrorKind::UnexpectedEof => SockErr::IoUnexpectedEof(cause),
+            _ => unimplemented!(),
+        }
+    }
+}
+
+
+pub struct ZmqSocket<'z> {
+    ptr: *mut c_void,
+    zmqlib: &'z ZmqLib,
+    rx_buf: zmq_msg_t,
+}
 
 impl<'z> ZmqSocket<'z> {
-    fn set_option(&self,
-                  option_name: Constants,
-                  optvalue: *const c_void,
-                  optlen: size_t) -> io::Result<()> {
+    fn set_option(&self, name: Constants, value: *const c_void, len: size_t)
+                  -> SockResult<()> {
         let func = cfn! {
             fn zmq_setsockopt(socket: *mut c_void,
                               option_name: c_int,
                               option_value: *const c_void,
                               option_len: size_t) -> c_int,
-            in self.lib.lib
+            in self.zmqlib.lib
         };
-        unsafe { match func(self.ptr, option_name as c_int, optvalue, optlen) {
+        match unsafe { func(self.ptr, name as c_int, value, len) } {
             0 => Ok(()),
             _ => {
-                let msg = "Setting socket option failed";
-                Err(io::Error::new(io::ErrorKind::Other, msg))
+                let msg = String::from("Setting socket option failed");
+                Err(SockErr::FailedToSetOption(msg))
             },
-        }}
+        }
     }
 
-    fn set_int_option(&self, arg: Constants, argval: c_int) -> io::Result<()> {
-        let ptr = (&argval as *const c_int) as *const c_void;
+    fn set_int_option(&self, arg: Constants, value: c_int) -> SockResult<()> {
+        let ptr = &value as *const c_int as *const c_void;
         self.set_option(arg, ptr, mem::size_of::<c_int>())
     }
 
-    fn set_slice_option<T>(&self, arg: Constants, argval: &[T])
-                           -> io::Result<()> {
-        let len = argval.len();
-        let ptr = argval.as_ptr() as *const c_void;
+    fn set_slice_option<T>(&self, arg: Constants, value: &[T])
+                           -> SockResult<()> {
+        let len = value.len();
+        let ptr = value.as_ptr() as *const c_void;
         self.set_option(arg, ptr, len * mem::size_of::<T>() as size_t)
     }
 
     #[allow(unused)]
-    fn set_mut_slice_option<T>(&self, arg: Constants, argval: &mut [T])
-                               -> io::Result<()> {
-        let len = argval.len();
-        let ptr = argval.as_mut_ptr() as *mut c_void;
+    fn set_mut_slice_option<T>(&self, arg: Constants, value: &mut [T])
+                               -> SockResult<()> {
+        let len = value.len();
+        let ptr = value.as_mut_ptr() as *mut c_void;
         self.set_option(arg, ptr, len * mem::size_of::<T>() as size_t)
     }
 
-    pub fn set_linger_period(&self, millis: c_int) -> io::Result<()> {
+    pub fn set_linger_period(&self, millis: c_int) -> SockResult<()> {
         self.set_int_option(Constants::ZMQ_LINGER, millis)
     }
 
-    pub fn set_recv_timeout(&self, millis: c_int) -> io::Result<()> {
+    pub fn set_recv_timeout(&self, millis: c_int) -> SockResult<()> {
         self.set_int_option(Constants::ZMQ_RCVTIMEO, millis)
     }
 
-    pub fn set_send_timeout(&self, millis: c_int) -> io::Result<()> {
+    pub fn set_send_timeout(&self, millis: c_int) -> SockResult<()> {
         self.set_int_option(Constants::ZMQ_SNDTIMEO, millis)
     }
 
-    pub fn subscribe(&self, filter: &[u8]) -> io::Result<()> {
+    pub fn subscribe(&self, filter: &[u8]) -> SockResult<()> {
         self.set_slice_option(Constants::ZMQ_SUBSCRIBE, filter)
     }
 
     /// See [zmq-connect](http://api.zeromq.org/4-1:zmq-connect)
-    pub fn connect(&self, addr: &str) -> io::Result<()> {
+    pub fn connect(&self, addr: &str) -> SockResult<()> {
         let func = cfn! {
             fn zmq_connect(socket: *mut c_void, addr: *const c_char) -> c_int,
-            in self.lib.lib
+            in self.zmqlib.lib
         };
         let cstr = CString::new(addr).unwrap();
         let addr_ptr = cstr.as_ptr() as *const c_char;
         match unsafe { func(self.ptr, addr_ptr) } {
             0 => Ok(()),
-            _ => {
-                let msg = "Error connecting";
-                Err(io::Error::new(io::ErrorKind::ConnectionAborted, msg))
-            },
+            _ => Err(SockErr::FailedToConnect { address: String::from(addr) }),
         }
     }
 
     /// See [zmq-disconnect](http://api.zeromq.org/4-1:zmq-disconnect)
-    pub fn disconnect(&self, addr: &str) -> io::Result<()> {
+    pub fn disconnect(&self, addr: &str) -> SockResult<()> {
         let func = cfn! {
             fn zmq_disconnect(socket: *mut c_void, addr: *const c_char) -> c_int,
-            in self.lib.lib
+            in self.zmqlib.lib
         };
         let cstr = CString::new(addr).unwrap();
         let addr_ptr = cstr.as_ptr() as *const c_char;
         match unsafe { func(self.ptr, addr_ptr) } {
             0 => Ok(()),
-            _ => {
-                let msg = "Error disconnecting";
-                Err(io::Error::new(io::ErrorKind::ConnectionAborted, msg))
-            },
+            _ => Err(SockErr::FailedToDisconnect { address: String::from(addr) }),
         }
     }
 
     /// See [zmq-bind](http://api.zeromq.org/4-1:zmq-bind)
-    pub fn bind(&self, addr: &str) -> io::Result<()> {
+    pub fn bind(&self, addr: &str) -> SockResult<()> {
         let func = cfn! {
             fn zmq_bind(socket: *mut c_void, addr: *const c_char) -> c_int,
-            in self.lib.lib
+            in self.zmqlib.lib
         };
         let addr_ptr = CString::new(addr).unwrap().into_raw();
         match unsafe { func(self.ptr, addr_ptr) } {
             0 => Ok(()),
-            _ => {
-                let msg = "Error binding";
-                Err(io::Error::new(io::ErrorKind::ConnectionAborted, msg))
-            },
+            _ => Err(SockErr::FailedToBind { address: String::from(addr) }),
         }
     }
 
     /// See [zmq_recv](http://api.zeromq.org/4-1:zmq_recv)
     pub fn receive<'b>(&self, buf: &'b mut [u8], flags: c_int)
-                       -> io::Result<&'b [u8]> {
+                       -> SockResult<&'b [u8]> {
         let func = cfn! {
             fn zmq_recv(socket: *mut c_void,
                         buf: *mut c_void,
                         len: size_t,
                         flags: c_int) -> c_int,
-            in self.lib.lib
+            in self.zmqlib.lib
         };
         let bufptr = buf.as_mut_ptr() as *mut c_void;
         let buflen = buf.len() as size_t;
         match unsafe { func(self.ptr, bufptr, buflen, flags) } {
-            -1 => Err(io::Error::new(io::ErrorKind::Other, "Could not receive")),
+            -1 => { // TODO: try to use `errno_to_error()`
+                return Err(SockErr::FailedToReceive)
+            },
             num_bytes if num_bytes > buflen as c_int =>
-                Err(io::Error::new(io::ErrorKind::InvalidData, "Msg truncated")),
+                Err(SockErr::MessageTruncated),
             num_bytes => Ok(&buf[..num_bytes as usize]),
         }
     }
 
     /// See [zmq_send](http://api.zeromq.org/4-1:zmq_send)
-    pub fn send(&self, buf: &[u8], flags: c_int) -> io::Result<c_int> {
+    pub fn send(&self, buf: &[u8], flags: c_int) -> SockResult<c_int> {
         let func = cfn! {
             fn zmq_send(socket: *mut c_void,
                         buf: *const c_void,
                         len: size_t,
                         flags: c_int) -> c_int,
-            in self.lib.lib
+            in self.zmqlib.lib
         };
         let bufptr = buf.as_ptr() as *const c_void;
         let buflen = buf.len() as size_t;
         match unsafe { func(self.ptr, bufptr, buflen, flags) } {
-            -1 => Err(io::Error::new(io::ErrorKind::Other, "Could not send")),
+            -1 => Err(SockErr::FailedToSend), // TODO: use `errno_to_error()`
             num_bytes => Ok(num_bytes),
         }
     }
 
-    pub fn close(&self) -> io::Result<()> {
+    pub fn close(&self) -> SockResult<()> {
         let func = cfn!{
             fn zmq_close(socket: *mut c_void) -> c_int,
-            in self.lib.lib
+            in self.zmqlib.lib
         };
         match unsafe { func(self.ptr) } {
             0 => Ok(()),
-            _ => {
-                let msg = "Could not properly close socket";
-                Err(io::Error::new(io::ErrorKind::Other, msg))
-            },
+            _ => Err(SockErr::FailedToCloseSocket),
         }
     }
 }
@@ -233,16 +345,70 @@ impl<'z> Drop for ZmqSocket<'z> {
 /******************************************************************************/
 /*                              ZmqLib                                        */
 /******************************************************************************/
-pub struct ZmqLib { lib: lib::Library, path: PathBuf, }
+pub type ZmqLibResult<T> = Result<T, ZmqLibErr>;
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ZmqLibErr {
+    IoNotFound(Option<String>),
+    IoPermissionDenied(Option<String>),
+    IoConnectionRefused(Option<String>),
+    IoConnectionReset(Option<String>),
+    IoConnectionAborted(Option<String>),
+    IoNotConnected(Option<String>),
+    IoAddrInUse(Option<String>),
+    IoAddrNotAvailable(Option<String>),
+    IoBrokenPipe(Option<String>),
+    IoAlreadyExists(Option<String>),
+    IoWouldBlock(Option<String>),
+    IoInvalidInput(Option<String>),
+    IoInvalidData(Option<String>),
+    IoTimedOut(Option<String>),
+    IoWriteZero(Option<String>),
+    IoInterrupted(Option<String>),
+    IoOther(Option<String>),
+    IoUnexpectedEof(Option<String>),
+}
+
+impl From<io::Error> for ZmqLibErr {
+    fn from(ioe: io::Error) -> ZmqLibErr {
+        use io::ErrorKind;
+        use std::error::Error;
+        let cause = ioe.cause().map(|err: &Error| format!("{}", err));
+        match ioe.kind() {
+            ErrorKind::NotFound => ZmqLibErr::IoNotFound(cause),
+            ErrorKind::PermissionDenied => ZmqLibErr::IoPermissionDenied(cause),
+            ErrorKind::ConnectionRefused => ZmqLibErr::IoConnectionRefused(cause),
+            ErrorKind::ConnectionReset => ZmqLibErr::IoConnectionReset(cause),
+            ErrorKind::ConnectionAborted => ZmqLibErr::IoConnectionAborted(cause),
+            ErrorKind::NotConnected => ZmqLibErr::IoNotConnected(cause),
+            ErrorKind::AddrInUse => ZmqLibErr::IoAddrInUse(cause),
+            ErrorKind::AddrNotAvailable => ZmqLibErr::IoAddrNotAvailable(cause),
+            ErrorKind::BrokenPipe => ZmqLibErr::IoBrokenPipe(cause),
+            ErrorKind::AlreadyExists => ZmqLibErr::IoAlreadyExists(cause),
+            ErrorKind::WouldBlock => ZmqLibErr::IoWouldBlock(cause),
+            ErrorKind::InvalidInput => ZmqLibErr::IoInvalidInput(cause),
+            ErrorKind::InvalidData => ZmqLibErr::IoInvalidData(cause),
+            ErrorKind::TimedOut => ZmqLibErr::IoTimedOut(cause),
+            ErrorKind::WriteZero => ZmqLibErr::IoWriteZero(cause),
+            ErrorKind::Interrupted => ZmqLibErr::IoInterrupted(cause),
+            ErrorKind::Other => ZmqLibErr::IoOther(cause),
+            ErrorKind::UnexpectedEof => ZmqLibErr::IoUnexpectedEof(cause),
+            _ => unimplemented!(),
+        }
+    }
+}
+
+
+pub struct ZmqLib { lib: lib::Library,  path: PathBuf }
 
 impl ZmqLib {
-    pub fn new<'s, S: Into<&'s str>>(soname: S) -> io::Result<Self> {
+    pub fn new<'s, S: Into<&'s str>>(soname: S) -> ZmqLibResult<Self> {
         let path = PathBuf::from(soname.into());
-        let lib = try!(lib::Library::new(&path));
+        let lib = lib::Library::new(&path)?;
         Ok(ZmqLib { lib: lib, path: path })
     }
 
-    pub fn new_context<'z>(&'z self) -> io::Result<ZmqCtx<'z>> {
+    pub fn new_context<'z>(&'z self) -> ZmqLibResult<ZmqCtx<'z>> {
         let func = cfn! { fn zmq_ctx_new() -> *mut c_void,  in &self.lib };
         Ok(ZmqCtx { ptr: unsafe { func() }, lib: &self })
     }
